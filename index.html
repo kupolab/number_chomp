@@ -37,19 +37,19 @@ const MODES = [
 ];
 
 const COLORS = {
-  bg: '#0d0f1a',
-  tileBg: '#1a1e2e',
-  tileBorder: '#2a3050',
-  tileGlow: '#3a4a70',
-  text: '#e8e8f0',
-  textDim: '#6a7090',
-  accent: '#ff6b9d',
-  accentAlt: '#4ecdc4',
-  gold: '#ffd700',
-  danger: '#ff4757',
-  success: '#2ed573',
-  hudBg: '#12152080',
-  purple: '#a855f7',
+  bg: '#111528',
+  tileBg: '#1e2340',
+  tileBorder: '#344070',
+  tileGlow: '#4a5a90',
+  text: '#f0f0ff',
+  textDim: '#8890b8',
+  accent: '#ff7eb3',
+  accentAlt: '#56e8d8',
+  gold: '#ffe040',
+  danger: '#ff5a6a',
+  success: '#3adf7a',
+  hudBg: '#171c3580',
+  purple: '#b06aff',
 };
 
 // ─── CANVAS SETUP ────────────────────────────────────────────
@@ -83,6 +83,7 @@ let level = 1;
 let score = 0;
 let lives = 5;
 let combo = 0;
+let continues = 3;  // retries at same level before full reset
 let grid = [];          // grid[row][col] = { value, eaten, flashTime, flashColor }
 let player = { col: 0, row: 0, animTime: 0, chompTime: 0, hurtTime: 0, facing: 1 };
 let grumblins = [];
@@ -96,6 +97,67 @@ let gameOverTime = 0;
 let frameCount = 0;
 let wrongFlashTime = 0;
 let particles = [];
+
+// ─── SOUND ENGINE (Web Audio API synth — no files needed) ───
+const AudioCtx = window.AudioContext || window.webkitAudioContext;
+let audioCtx = null;
+function ensureAudio() {
+  if (!audioCtx) audioCtx = new AudioCtx();
+}
+
+function playTone(freq, duration, type = 'square', volume = 0.15, slide = 0) {
+  ensureAudio();
+  const osc = audioCtx.createOscillator();
+  const gain = audioCtx.createGain();
+  osc.type = type;
+  osc.frequency.setValueAtTime(freq, audioCtx.currentTime);
+  if (slide) osc.frequency.linearRampToValueAtTime(freq + slide, audioCtx.currentTime + duration);
+  gain.gain.setValueAtTime(volume, audioCtx.currentTime);
+  gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + duration);
+  osc.connect(gain);
+  gain.connect(audioCtx.destination);
+  osc.start();
+  osc.stop(audioCtx.currentTime + duration);
+}
+
+function sfxChomp() {
+  playTone(600, 0.06, 'square', 0.12);
+  setTimeout(() => playTone(900, 0.08, 'square', 0.10), 50);
+}
+
+function sfxWrong() {
+  playTone(200, 0.15, 'sawtooth', 0.12);
+  setTimeout(() => playTone(140, 0.2, 'sawtooth', 0.10), 100);
+}
+
+function sfxHurt() {
+  playTone(300, 0.08, 'square', 0.12, -200);
+  setTimeout(() => playTone(150, 0.15, 'sawtooth', 0.10), 80);
+}
+
+function sfxLevelComplete() {
+  const notes = [523, 659, 784, 1047];
+  notes.forEach((n, i) => setTimeout(() => playTone(n, 0.15, 'square', 0.10), i * 100));
+}
+
+function sfxGameOver() {
+  const notes = [400, 350, 300, 200];
+  notes.forEach((n, i) => setTimeout(() => playTone(n, 0.25, 'sawtooth', 0.08), i * 200));
+}
+
+function sfxMove() {
+  playTone(440, 0.03, 'square', 0.04);
+}
+
+function sfxSelect() {
+  playTone(660, 0.06, 'square', 0.08);
+}
+
+function sfxStart() {
+  playTone(440, 0.1, 'square', 0.10);
+  setTimeout(() => playTone(660, 0.1, 'square', 0.10), 80);
+  setTimeout(() => playTone(880, 0.15, 'square', 0.10), 160);
+}
 
 // ─── MATH HELPERS ────────────────────────────────────────────
 function isPrime(n) {
@@ -240,8 +302,8 @@ function generateLevel() {
   player.hurtTime = 0;
   player.facing = 1;
 
-  // Place grumblins
-  const numGrumblins = Math.min(2 + Math.floor((level - 1) / 1), 6);
+  // Place grumblins — start with 2, add 1 every 2 levels (max 6)
+  const numGrumblins = Math.min(2 + Math.floor((level - 1) / 2), 6);
   grumblins = [];
   for (let i = 0; i < numGrumblins; i++) {
     let gc, gr;
@@ -252,7 +314,7 @@ function generateLevel() {
     grumblins.push({
       col: gc, row: gr,
       type: i % 3,
-      moveTimer: randInt(30, 60 + Math.max(0, 40 - level * 5)),
+      moveTimer: randInt(60, 120 + Math.max(0, 60 - level * 4)),
       moveCounter: 0,
       bobOffset: Math.random() * Math.PI * 2,
     });
@@ -286,10 +348,12 @@ function eatTile() {
     player.chompTime = 12;
     spawnParticles(player.col, player.row, COLORS.gold, 6);
     spawnScoreParticle(player.col, player.row, `+${points}`);
+    sfxChomp();
 
     if (checkAllCorrectEaten()) {
       state = STATE.LEVEL_COMPLETE;
       levelCompleteTime = 120;
+      sfxLevelComplete();
     }
   } else {
     combo = 0;
@@ -300,10 +364,12 @@ function eatTile() {
     player.hurtTime = 30;
     wrongFlashTime = 8;
     spawnParticles(player.col, player.row, COLORS.danger, 8);
+    sfxWrong();
 
     if (lives <= 0) {
       state = STATE.GAME_OVER;
       gameOverTime = 0;
+      sfxGameOver();
     }
   }
 }
@@ -317,8 +383,8 @@ function movePlayer(dc, dr) {
   if (dc !== 0) player.facing = dc > 0 ? 1 : -1;
   player.animTime = 8;
 
-  // Auto-eat when moving onto a tile
-  eatTile();
+  // Movement does NOT auto-eat — press spacebar to eat
+  sfxMove();
 
   // Check grumblin collision
   checkGrumblinCollision();
@@ -339,10 +405,12 @@ function playerHitByGrumblin() {
   player.hurtTime = 30;
   wrongFlashTime = 8;
   spawnParticles(player.col, player.row, COLORS.danger, 10);
+  sfxHurt();
 
   if (lives <= 0) {
     state = STATE.GAME_OVER;
     gameOverTime = 0;
+    sfxGameOver();
   } else {
     // Respawn at center
     player.col = Math.floor(COLS / 2);
@@ -399,14 +467,14 @@ function updateGrumblins() {
     g.moveCounter++;
     if (g.moveCounter >= g.moveTimer) {
       g.moveCounter = 0;
-      g.moveTimer = Math.max(15, randInt(25, 55) - level * 2);
+      g.moveTimer = Math.max(40, randInt(55, 110) - level * 3);
 
       // Semi-random movement with slight bias toward player
       const dirs = [[0,-1],[0,1],[-1,0],[1,0]];
       shuffle(dirs);
 
-      // 30% chance to move toward player
-      if (Math.random() < 0.3) {
+      // 15% chance to move toward player (was 30%)
+      if (Math.random() < 0.15) {
         const dx = player.col - g.col;
         const dy = player.row - g.row;
         if (Math.abs(dx) > Math.abs(dy)) {
@@ -422,12 +490,6 @@ function updateGrumblins() {
         if (nc >= 0 && nc < COLS && nr >= 0 && nr < ROWS) {
           g.col = nc;
           g.row = nr;
-          // Grumblins eat tiles they walk over
-          if (!grid[nr][nc].eaten) {
-            grid[nr][nc].eaten = true;
-            grid[nr][nc].flashTime = 8;
-            grid[nr][nc].flashColor = COLORS.purple;
-          }
           break;
         }
       }
@@ -435,12 +497,6 @@ function updateGrumblins() {
       // Check player collision
       if (g.col === player.col && g.row === player.row) {
         playerHitByGrumblin();
-      }
-
-      // Check win after grumblin eats (they might eat the last correct tile... but no, that's a loss scenario)
-      if (checkAllCorrectEaten()) {
-        state = STATE.LEVEL_COMPLETE;
-        levelCompleteTime = 120;
       }
     }
   }
@@ -462,7 +518,14 @@ function drawTile(col, row) {
   const pad = 2 * SCALE;
 
   if (tile.eaten) {
-    // Flash effect
+    // Dim grid cell so player can still see the grid structure
+    ctx.fillStyle = '#151a32';
+    ctx.fillRect(x + pad, y + pad, TILE_W - pad * 2, TILE_H - pad * 2);
+    ctx.strokeStyle = '#252e50';
+    ctx.lineWidth = SCALE * 0.5;
+    ctx.strokeRect(x + pad, y + pad, TILE_W - pad * 2, TILE_H - pad * 2);
+
+    // Flash effect on top
     if (tile.flashTime > 0) {
       const alpha = tile.flashTime / 20;
       ctx.fillStyle = tile.flashColor + Math.floor(alpha * 80).toString(16).padStart(2, '0');
@@ -496,8 +559,8 @@ function drawTile(col, row) {
 function drawPlayer() {
   const x = GRID_X + player.col * TILE_W + TILE_W / 2;
   const y = GRID_Y + player.row * TILE_H + TILE_H / 2;
-  const s = TILE_W * 0.38;
-  const bob = Math.sin(frameCount * 0.1) * 2 * SCALE;
+  const s = TILE_W * 0.26;
+  const bob = Math.sin(frameCount * 0.1) * 1.5 * SCALE;
   const facing = player.facing;
 
   // Hurt flash
@@ -506,52 +569,115 @@ function drawPlayer() {
     if (player.hurtTime % 4 < 2) return; // Blink
   }
 
+  // Leg animation phase
+  const walking = player.animTime > 0;
+  const legPhase = walking ? Math.sin(frameCount * 0.5) : 0;
+
   ctx.save();
   ctx.translate(x, y + bob);
   ctx.scale(facing, 1);
 
-  // Body (round green blob)
-  const bodyColor = player.chompTime > 0 ? '#5aff5a' : '#2ed573';
+  // ── Little legs (drawn behind body) ──
+  const legW = s * 0.22;
+  const legH = s * 0.35;
+  const legY = s * 0.65;
+  const legColor = '#1faa55';
+  const footColor = '#34e880';
+  // Left leg
+  ctx.save();
+  ctx.translate(-s * 0.32, legY);
+  ctx.rotate(legPhase * 0.35);
+  ctx.fillStyle = legColor;
+  ctx.beginPath();
+  ctx.roundRect(-legW / 2, 0, legW, legH, legW * 0.3);
+  ctx.fill();
+  // Foot
+  ctx.fillStyle = footColor;
+  ctx.beginPath();
+  ctx.ellipse(0, legH, legW * 0.6, legW * 0.35, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+  // Right leg
+  ctx.save();
+  ctx.translate(s * 0.32, legY);
+  ctx.rotate(-legPhase * 0.35);
+  ctx.fillStyle = legColor;
+  ctx.beginPath();
+  ctx.roundRect(-legW / 2, 0, legW, legH, legW * 0.3);
+  ctx.fill();
+  ctx.fillStyle = footColor;
+  ctx.beginPath();
+  ctx.ellipse(0, legH, legW * 0.6, legW * 0.35, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+
+  // ── Body (single cohesive green) ──
+  const bodyColor = player.chompTime > 0 ? '#4dff8d' : '#34e880';
   ctx.fillStyle = bodyColor;
   ctx.beginPath();
   ctx.arc(0, 0, s, 0, Math.PI * 2);
   ctx.fill();
 
-  // Darker shade on bottom
-  ctx.fillStyle = '#1fb85e';
+  // Subtle specular highlight on top (not a different color band)
+  ctx.fillStyle = 'rgba(140, 255, 200, 0.25)';
   ctx.beginPath();
-  ctx.arc(0, s * 0.15, s, 0.1 * Math.PI, 0.9 * Math.PI);
+  ctx.ellipse(-s * 0.15, -s * 0.4, s * 0.45, s * 0.25, -0.3, 0, Math.PI * 2);
   ctx.fill();
 
-  // Eye
+  // ── Left eye ──
   ctx.fillStyle = 'white';
   ctx.beginPath();
-  ctx.arc(s * 0.25, -s * 0.25, s * 0.28, 0, Math.PI * 2);
+  ctx.ellipse(-s * 0.30, -s * 0.15, s * 0.22, s * 0.26, 0, 0, Math.PI * 2);
   ctx.fill();
-  ctx.fillStyle = '#111';
+  ctx.fillStyle = '#1a1a2e';
   ctx.beginPath();
-  ctx.arc(s * 0.32, -s * 0.22, s * 0.14, 0, Math.PI * 2);
+  ctx.arc(-s * 0.25, -s * 0.10, s * 0.13, 0, Math.PI * 2);
   ctx.fill();
-  // Eye glint
   ctx.fillStyle = 'white';
   ctx.beginPath();
-  ctx.arc(s * 0.38, -s * 0.30, s * 0.06, 0, Math.PI * 2);
+  ctx.arc(-s * 0.20, -s * 0.18, s * 0.055, 0, Math.PI * 2);
   ctx.fill();
 
-  // Mouth
+  // ── Right eye ──
+  ctx.fillStyle = 'white';
+  ctx.beginPath();
+  ctx.ellipse(s * 0.30, -s * 0.15, s * 0.22, s * 0.26, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = '#1a1a2e';
+  ctx.beginPath();
+  ctx.arc(s * 0.35, -s * 0.10, s * 0.13, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = 'white';
+  ctx.beginPath();
+  ctx.arc(s * 0.40, -s * 0.18, s * 0.055, 0, Math.PI * 2);
+  ctx.fill();
+
+  // ── Cheek blush ──
+  ctx.fillStyle = 'rgba(255, 130, 170, 0.3)';
+  ctx.beginPath();
+  ctx.ellipse(-s * 0.58, s * 0.15, s * 0.13, s * 0.08, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.beginPath();
+  ctx.ellipse(s * 0.58, s * 0.15, s * 0.13, s * 0.08, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  // ── Mouth ──
   if (player.chompTime > 0) {
     player.chompTime--;
-    // Open mouth chomp
-    ctx.fillStyle = '#0d0f1a';
+    ctx.fillStyle = '#1a1a2e';
     ctx.beginPath();
-    ctx.arc(s * 0.5, s * 0.15, s * 0.35, 0, Math.PI);
+    ctx.ellipse(s * 0.05, s * 0.30, s * 0.22, s * 0.16, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#ff8aaa';
+    ctx.beginPath();
+    ctx.ellipse(s * 0.05, s * 0.36, s * 0.12, s * 0.07, 0, 0, Math.PI);
     ctx.fill();
   } else {
-    // Small smile
-    ctx.strokeStyle = '#0d0f1a';
-    ctx.lineWidth = 2 * SCALE;
+    ctx.strokeStyle = '#1a1a2e';
+    ctx.lineWidth = Math.max(1.5, 1.5 * SCALE);
+    ctx.lineCap = 'round';
     ctx.beginPath();
-    ctx.arc(s * 0.35, s * 0.1, s * 0.2, 0.1 * Math.PI, 0.9 * Math.PI);
+    ctx.arc(s * 0.05, s * 0.22, s * 0.18, 0.15 * Math.PI, 0.85 * Math.PI);
     ctx.stroke();
   }
 
@@ -561,8 +687,8 @@ function drawPlayer() {
 function drawGrumblin(g) {
   const x = GRID_X + g.col * TILE_W + TILE_W / 2;
   const y = GRID_Y + g.row * TILE_H + TILE_H / 2;
-  const s = TILE_W * 0.35;
-  const bob = Math.sin(frameCount * 0.08 + g.bobOffset) * 2 * SCALE;
+  const s = TILE_W * 0.24;
+  const bob = Math.sin(frameCount * 0.08 + g.bobOffset) * 1.5 * SCALE;
 
   ctx.save();
   ctx.translate(x, y + bob);
@@ -734,48 +860,63 @@ function drawTitleScreen() {
   const hintY = H * 0.88;
   const hintSize = Math.min(7 * SCALE, 10);
   drawText('↑↓ Select   ENTER Start', cx, hintY, hintSize, COLORS.textDim);
-  drawText('Arrow Keys Move   SPACE Eat', cx, hintY + hintSize * 2.2, hintSize, COLORS.textDim);
+  drawText('Arrow Keys Move   SPACE Chomp!', cx, hintY + hintSize * 2.2, hintSize, COLORS.textDim);
 
-  // Animated chompy on title
+  // Animated chompy on title — matches in-game cute style with legs
   const chompX = cx;
-  const chompY = H * 0.34;
-  const chompS = Math.min(30, 20 * SCALE);
-  const chompBob = Math.sin(frameCount * 0.06) * 4;
+  const chompY = H * 0.33;
+  const cs = Math.min(24, 16 * SCALE);
+  const chompBob = Math.sin(frameCount * 0.06) * 3;
+  const tLegPhase = Math.sin(frameCount * 0.1);
   ctx.save();
   ctx.translate(chompX, chompY + chompBob);
-  ctx.fillStyle = '#2ed573';
-  ctx.beginPath();
-  ctx.arc(0, 0, chompS, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.fillStyle = '#1fb85e';
-  ctx.beginPath();
-  ctx.arc(0, chompS * 0.15, chompS, 0.1 * Math.PI, 0.9 * Math.PI);
-  ctx.fill();
+  // Legs
+  const tlW = cs * 0.22, tlH = cs * 0.35;
+  ctx.save(); ctx.translate(-cs * 0.32, cs * 0.65); ctx.rotate(tLegPhase * 0.3);
+  ctx.fillStyle = '#1faa55';
+  ctx.beginPath(); ctx.roundRect(-tlW/2, 0, tlW, tlH, tlW*0.3); ctx.fill();
+  ctx.fillStyle = '#34e880';
+  ctx.beginPath(); ctx.ellipse(0, tlH, tlW*0.6, tlW*0.35, 0, 0, Math.PI*2); ctx.fill();
+  ctx.restore();
+  ctx.save(); ctx.translate(cs * 0.32, cs * 0.65); ctx.rotate(-tLegPhase * 0.3);
+  ctx.fillStyle = '#1faa55';
+  ctx.beginPath(); ctx.roundRect(-tlW/2, 0, tlW, tlH, tlW*0.3); ctx.fill();
+  ctx.fillStyle = '#34e880';
+  ctx.beginPath(); ctx.ellipse(0, tlH, tlW*0.6, tlW*0.35, 0, 0, Math.PI*2); ctx.fill();
+  ctx.restore();
+  // Body
+  ctx.fillStyle = '#34e880';
+  ctx.beginPath(); ctx.arc(0, 0, cs, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = 'rgba(140, 255, 200, 0.25)';
+  ctx.beginPath(); ctx.ellipse(-cs*0.15, -cs*0.4, cs*0.45, cs*0.25, -0.3, 0, Math.PI*2); ctx.fill();
+  // Eyes
   ctx.fillStyle = 'white';
-  ctx.beginPath();
-  ctx.arc(chompS * 0.25, -chompS * 0.25, chompS * 0.28, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.fillStyle = '#111';
-  ctx.beginPath();
-  ctx.arc(chompS * 0.32, -chompS * 0.22, chompS * 0.14, 0, Math.PI * 2);
-  ctx.fill();
+  ctx.beginPath(); ctx.ellipse(-cs*0.30, -cs*0.15, cs*0.22, cs*0.26, 0, 0, Math.PI*2); ctx.fill();
+  ctx.fillStyle = '#1a1a2e';
+  ctx.beginPath(); ctx.arc(-cs*0.25, -cs*0.10, cs*0.13, 0, Math.PI*2); ctx.fill();
   ctx.fillStyle = 'white';
-  ctx.beginPath();
-  ctx.arc(chompS * 0.38, -chompS * 0.30, chompS * 0.06, 0, Math.PI * 2);
-  ctx.fill();
-  // Chomp animation
+  ctx.beginPath(); ctx.arc(-cs*0.20, -cs*0.18, cs*0.055, 0, Math.PI*2); ctx.fill();
+  ctx.fillStyle = 'white';
+  ctx.beginPath(); ctx.ellipse(cs*0.30, -cs*0.15, cs*0.22, cs*0.26, 0, 0, Math.PI*2); ctx.fill();
+  ctx.fillStyle = '#1a1a2e';
+  ctx.beginPath(); ctx.arc(cs*0.35, -cs*0.10, cs*0.13, 0, Math.PI*2); ctx.fill();
+  ctx.fillStyle = 'white';
+  ctx.beginPath(); ctx.arc(cs*0.40, -cs*0.18, cs*0.055, 0, Math.PI*2); ctx.fill();
+  // Blush
+  ctx.fillStyle = 'rgba(255, 130, 170, 0.3)';
+  ctx.beginPath(); ctx.ellipse(-cs*0.58, cs*0.15, cs*0.13, cs*0.08, 0, 0, Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.ellipse(cs*0.58, cs*0.15, cs*0.13, cs*0.08, 0, 0, Math.PI*2); ctx.fill();
+  // Mouth — alternating chomp
   const mouthOpen = Math.abs(Math.sin(frameCount * 0.08)) * 0.4;
   if (mouthOpen > 0.15) {
-    ctx.fillStyle = '#0d0f1a';
-    ctx.beginPath();
-    ctx.arc(chompS * 0.5, chompS * 0.15, chompS * 0.3, 0, Math.PI);
-    ctx.fill();
+    ctx.fillStyle = '#1a1a2e';
+    ctx.beginPath(); ctx.ellipse(cs*0.05, cs*0.30, cs*0.18, cs*0.14, 0, 0, Math.PI*2); ctx.fill();
+    ctx.fillStyle = '#ff8aaa';
+    ctx.beginPath(); ctx.ellipse(cs*0.05, cs*0.36, cs*0.10, cs*0.06, 0, 0, Math.PI); ctx.fill();
   } else {
-    ctx.strokeStyle = '#0d0f1a';
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.arc(chompS * 0.35, chompS * 0.1, chompS * 0.2, 0.1 * Math.PI, 0.9 * Math.PI);
-    ctx.stroke();
+    ctx.strokeStyle = '#1a1a2e';
+    ctx.lineWidth = 2; ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.arc(cs*0.05, cs*0.22, cs*0.16, 0.15*Math.PI, 0.85*Math.PI); ctx.stroke();
   }
   ctx.restore();
 }
@@ -859,14 +1000,22 @@ function drawGameOver() {
   const subSize = Math.min(12 * SCALE, 16);
   const hintSize = Math.min(8 * SCALE, 11);
 
-  drawText('GAME OVER', W / 2, H * 0.35, titleSize, COLORS.danger);
-  drawText(`Final Score: ${score}`, W / 2, H * 0.48, subSize, COLORS.gold);
-  drawText(`Level Reached: ${level}`, W / 2, H * 0.56, subSize * 0.8, COLORS.text);
-  drawText(`Mode: ${MODES[selectedMode].name}`, W / 2, H * 0.63, subSize * 0.7, COLORS.textDim);
+  drawText('GAME OVER', W / 2, H * 0.30, titleSize, COLORS.danger);
+  drawText(`Final Score: ${score}`, W / 2, H * 0.43, subSize, COLORS.gold);
+  drawText(`Level Reached: ${level}`, W / 2, H * 0.51, subSize * 0.8, COLORS.text);
+  drawText(`Mode: ${MODES[selectedMode].name}`, W / 2, H * 0.58, subSize * 0.7, COLORS.textDim);
 
   if (gameOverTime > 60) {
-    drawText('Press ENTER to play again', W / 2, H * 0.78, hintSize, COLORS.accentAlt);
-    drawText('Press ESC for title screen', W / 2, H * 0.78 + hintSize * 2.5, hintSize, COLORS.textDim);
+    if (continues > 0) {
+      drawText(`Continue from Level ${level}?`, W / 2, H * 0.70, hintSize, COLORS.accentAlt);
+      drawText(`Press SPACE (${continues} ${continues === 1 ? 'retry' : 'retries'} left)`, W / 2, H * 0.70 + hintSize * 2.5, hintSize, COLORS.text);
+      drawText('ENTER: Restart from Level 1', W / 2, H * 0.70 + hintSize * 5, hintSize * 0.9, COLORS.textDim);
+      drawText('ESC: Title screen', W / 2, H * 0.70 + hintSize * 7, hintSize * 0.9, COLORS.textDim);
+    } else {
+      drawText('No continues remaining', W / 2, H * 0.70, hintSize, COLORS.textDim);
+      drawText('ENTER: Restart from Level 1', W / 2, H * 0.70 + hintSize * 3, hintSize, COLORS.accentAlt);
+      drawText('ESC: Title screen', W / 2, H * 0.70 + hintSize * 5.5, hintSize * 0.9, COLORS.textDim);
+    }
   }
 }
 
@@ -945,9 +1094,11 @@ document.addEventListener('keydown', e => {
     case STATE.TITLE:
       if (key === 'ArrowUp') {
         titleCursor = (titleCursor - 1 + MODES.length) % MODES.length;
+        sfxSelect();
         e.preventDefault();
       } else if (key === 'ArrowDown') {
         titleCursor = (titleCursor + 1) % MODES.length;
+        sfxSelect();
         e.preventDefault();
       } else if (key === 'Enter') {
         selectedMode = titleCursor;
@@ -955,8 +1106,10 @@ document.addEventListener('keydown', e => {
         score = 0;
         lives = 5;
         combo = 0;
+        continues = 3;
         generateLevel();
         state = STATE.PLAYING;
+        sfxStart();
         e.preventDefault();
       }
       break;
@@ -982,16 +1135,29 @@ document.addEventListener('keydown', e => {
 
     case STATE.GAME_OVER:
       if (gameOverTime > 60) {
-        if (key === 'Enter') {
+        if (key === ' ' && continues > 0) {
+          // Continue from same level
+          continues--;
+          lives = 5;
+          combo = 0;
+          generateLevel();  // re-generates same level (level var unchanged)
+          state = STATE.PLAYING;
+          sfxStart();
+          e.preventDefault();
+        } else if (key === 'Enter') {
+          // Full restart
           level = 1;
           score = 0;
           lives = 5;
           combo = 0;
+          continues = 3;
           generateLevel();
           state = STATE.PLAYING;
+          sfxStart();
           e.preventDefault();
         } else if (key === 'Escape') {
           state = STATE.TITLE;
+          continues = 3;
           e.preventDefault();
         }
       }
